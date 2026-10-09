@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.zip
+.env
+.env.*
+*.log
+CONNECTION-CHECK-*.md
+bridge-backup-*.json
+bridge-sync-v1.enc.json

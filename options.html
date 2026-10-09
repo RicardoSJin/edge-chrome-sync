@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>桥同步 · Edge & Chrome</title><link rel="stylesheet" href="options.css"></head>
+<body><main>
+<header><div class="brand"><span class="logo" aria-hidden="true">⇄</span><div><h1>桥同步</h1><p>Edge & Chrome · 你的浏览器，你的云端</p></div></div><span class="pill">WebDAV · 端到端加密</span></header>
+<div class="layout"><section class="card"><div class="section-title"><span class="step">01</span><div><h2>连接你的 WebDAV</h2><p>两端填写同一目录、账户与加密口令，即可开始同步。</p></div></div>
+<form id="config">
+<label>同步方式<input value="WebDAV / HTTPS" disabled></label>
+<label>同步接口<input id="url" type="url" required placeholder="https://dav.example.com/browser-sync/" autocomplete="off"><small>填写已创建的专用文件夹地址。不会读取或修改 KISS 的同步文件。</small></label>
+<label>同步账户<input id="username" autocomplete="off" placeholder="WebDAV 用户名"></label>
+<label>同步密钥<span class="password"><input id="password" type="password" autocomplete="off" placeholder="WebDAV 密码或应用专用密码"><button type="button" data-reveal="password" aria-label="显示同步密钥">显示</button></span></label>
+<div class="divider"></div>
+<div class="section-title"><span class="step">02</span><div><h2>独立加密口令</h2><p>只用于数据加密和解密，与 WebDAV 密码分开。</p></div></div>
+<label>加密口令<span class="password"><input id="pass" type="password" minlength="12" autocomplete="new-password" placeholder="至少 12 个字符，建议使用长随机口令"><button type="button" data-reveal="pass" aria-label="显示加密口令">显示</button></span></label>
+<p class="warning">请妥善保存口令。遗失后无法读取已加密的云端数据，也无法通过重置服务器密码找回。</p>
+<label class="check"><input type="checkbox" id="remember"><span>在此设备记住加密口令<small>默认仅保留到浏览器会话结束。勾选后以明文存入扩展本地存储，适合可信设备。</small></span></label>
+<button id="clearPass" type="button" class="text-button">清除本地口令</button>
+<div class="divider"></div>
+<div class="section-title"><span class="step">03</span><div><h2>选择同步内容</h2><p>各类数据独立比较修改时间，较新的整类快照覆盖较旧的。</p></div></div>
+<div class="choices">
+<label class="check choice"><input type="checkbox" id="bookmarks" checked><span>收藏夹<small>收藏夹栏、其他收藏夹、移动收藏夹；保留层级与顺序。</small></span></label>
+<label class="check choice"><input type="checkbox" id="privacy"><span>隐私与服务偏好<small>网络预测、错误页面建议、地址与信用卡自动填充开关、密码保存开关、搜索建议、Do Not Track。</small></span></label>
+<label class="check choice"><input type="checkbox" id="fonts"><span>网页字号<small>默认字号、等宽字号、最小字号。</small></span></label>
+</div>
+<div class="schedule"><label class="check"><input id="auto" type="checkbox"><span>自动同步</span></label><label>检查间隔<select id="interval"><option value="5">5 分钟</option><option value="15" selected>15 分钟</option><option value="30">30 分钟</option><option value="60">60 分钟</option></select></label></div>
+<label class="check consent"><input type="checkbox" id="consent" required><span>我了解：首次同步时，如果云端已有数据，将覆盖此浏览器所选内容。<small>覆盖前保存本地备份，最近 5 份可恢复。首次在另一浏览器安装时也执行此规则。</small></span></label>
+<div class="actions"><button type="submit" class="primary">保存配置</button><button type="button" id="sync" class="secondary">立即同步</button><button type="button" id="diagnose">检测连接</button></div>
+<p class="footnote">检测连接使用当前填写的接口、账户和同步密钥，只检查目录，不保存配置、不上传文件、不修改收藏夹，也不需要加密口令。</p>
+<p class="footnote">修改配置后请先保存。立即同步使用已保存的配置。</p>
+</form></section>
+<aside><section class="card status-card"><span class="eyebrow">同步状态</span><div id="status" role="status" aria-live="polite">尚未同步</div><p id="statusTime"></p><span id="keyState" class="badge">口令未设置</span><p id="recovery" class="warning" hidden></p></section>
+<section class="card"><h2>配置迁移</h2><p>复制连接地址、账户和同步偏好到另一个浏览器。服务器密码和加密口令需要单独填写。</p><div class="inline-actions"><button id="copy" type="button">复制配置</button><button id="import" type="button">导入配置</button></div><textarea id="transfer" rows="4" aria-label="待导入的配置" placeholder="在这里粘贴配置，再点击导入" spellcheck="false"></textarea></section>
+<section class="card"><h2>本地备份</h2><p>恢复后暂停自动同步。导出的备份为明文，请妥善保管。</p><div id="backups">还没有备份</div></section>
+<section class="card scope"><h2>同步范围说明</h2><p>浏览器不开放所有设置。此插件不支持默认搜索引擎、启动页、主题、登录密码、Cookie、浏览历史、已安装扩展及其他扩展的内部配置。</p><p>首次连接前建议关闭浏览器自带的收藏夹同步，避免两套同步同时改动数据。</p><button id="release" type="button" class="text-button">释放隐私与字号设置控制</button></section></aside></div>
+<footer>数据只发送到你指定的 WebDAV · 无账号注册 · 无统计追踪</footer>
+</main><script src="options.js" type="module"></script></body></html>
