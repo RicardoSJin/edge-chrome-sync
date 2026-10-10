@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
-node --test tests/core.test.js tests/integration.test.js tests/browser.test.js
+node --test tests/*.test.js
 if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
 Add-Type -AssemblyName System.Drawing
 New-Item -ItemType Directory -Force -Path 'icons' | Out-Null

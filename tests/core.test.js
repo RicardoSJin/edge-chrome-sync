@@ -25,7 +25,7 @@ test('First cloud wins, later newer wins, equal timestamp converges to cloud',()
 });
 test('WebDAV conditional requests and conflict/auth/ETag errors',async()=>{
   const config={url:'https://nas.example/folder/',username:'用户',password:'secret'};const calls=[];
-  const dav=new WebDAV(config,async(url,options)=>{calls.push({url,options});return new Response('{}',{status:200,headers:{etag:'"v1"'}});});
+  const dav=new WebDAV(config,async(url,options)=>{if(options.method==='LOCK')return new Response(null,{status:405});calls.push({url,options});return new Response('{}',{status:200,headers:{etag:'"v1"'}});});
   const prev=await dav.read();await dav.write({},prev);assert.equal(calls[1].options.headers['If-Match'],'"v1"');assert.equal(calls[0].options.redirect,'manual');
   await dav.write({},{doc:null});assert.equal(calls[2].options.headers['If-None-Match'],'*');
   await assert.rejects(dav.write({},{doc:{},etag:null}),/ETag/);await assert.rejects(dav.write({},{doc:{},etag:'W/"1"'}),/ETag/);

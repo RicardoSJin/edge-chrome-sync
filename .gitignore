@@ -7,3 +7,5 @@ dist/
 CONNECTION-CHECK-*.md
 bridge-backup-*.json
 bridge-sync-v1.enc.json
+.DS_Store
+VALIDATION.md

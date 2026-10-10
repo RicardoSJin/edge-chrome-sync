@@ -13,6 +13,7 @@ let permissionGranted=true;
 globalThis.chrome={runtime:{id:'test-id',getURL:p=>'chrome-extension://test-id/'+p,onMessage:event(),onInstalled:event(),onStartup:event(),openOptionsPage(){}},storage:{local:storage(),session:storage()},bookmarks,permissions:{async contains(){return permissionGranted;}},alarms:{onAlarm:event(),async create(){},async clear(){}},action:{onClicked:event()}};
 let cloud=null,etag=0,conflict=false,putCount=0;
 globalThis.fetch=async(url,o)=>{
+  if(o.method==='LOCK')return new Response(null,{status:405});
   if(o.method==='PROPFIND')return new Response('<multistatus/>',{status:207});
   if(o.method==='GET')return cloud?new Response(JSON.stringify(cloud),{headers:{etag:'"'+etag+'"'}}):new Response('',{status:404});
   putCount++;
