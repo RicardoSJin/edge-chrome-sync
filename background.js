@@ -1,4 +1,4 @@
-import {encrypt,decrypt,endpoint,hash,validateDoc,winner,PRIVACY,FONTS} from './core.js';
+import {encrypt,decrypt,endpoint,hash,validateDoc,winner,mergeBookmarks,PRIVACY,FONTS} from './core.js';
 import {capture,apply,preflight,releaseSettings} from './browser.js';
 import {WebDAV} from './dav.js';
 let busy=false, applying=false, generation=0, pendingEvent=Promise.resolve();
@@ -17,9 +17,11 @@ async function requireHost(url) {
   const origin=new URL(endpoint(url)).origin+'/*';
   if(!await chrome.permissions.contains({origins:[origin]}))throw Error('[站点权限缺失] 请点击“检测连接”或重新保存配置，并允许访问 WebDAV 站点。也请检查扩展详情中的站点访问限制。');
 }
-async function sync() {
+async function sync({mergeOnly=false}={}) {
   await pendingEvent;
-  const {config=initial,state={},journal}=await local.get(['config','state','journal']);
+  const {config:savedConfig=initial,state={},journal}=await local.get(['config','state','journal']);
+  if(mergeOnly&&!savedConfig.groups.includes('bookmarks'))throw Error('请先勾选收藏夹并保存配置，再合并。');
+  const config=mergeOnly?{...savedConfig,groups:['bookmarks']}:savedConfig;
   if(journal) throw Error('上次应用数据被中断。请先在备份区恢复，再继续同步。');
   if(!config.consent) throw Error('请先确认首次同步规则并保存配置。');
   await requireHost(config.url);
@@ -41,8 +43,15 @@ async function sync() {
   const dav=new WebDAV(config),remote=await dav.read();
   const cloud=remote.doc?validateDoc(await decrypt(remote.doc,pass)):{version:1,groups:{}};
   const merged={version:1,groups:{...cloud.groups}},changes={};
+  let mergingBookmarks=mergeOnly;
   for(const group of config.groups) {
-    const win=winner(records[group],cloud.groups[group],!initialized[group]);
+    let win=winner(records[group],cloud.groups[group],!initialized[group]);
+    if(group==='bookmarks'&&cloud.groups.bookmarks&&(mergeOnly||!initialized.bookmarks)) {
+      mergingBookmarks=true;
+      const data=mergeBookmarks(cloud.groups.bookmarks.data,current.bookmarks);
+      win=await hash(data)===await hash(cloud.groups.bookmarks.data)?cloud.groups.bookmarks:
+        {data,time:Math.max(Date.now(),cloud.groups.bookmarks.time+1,records.bookmarks.time+1),device};
+    }
     merged.groups[group]={data:win.data,time:win.time,device:win.device};
     if(await hash(win.data)!==await hash(current[group])) changes[group]=win.data;
   }
@@ -53,11 +62,12 @@ async function sync() {
   };
   await assertUnchanged();
   const needsWrite=JSON.stringify(merged)!==JSON.stringify(cloud);
+  let backupId;
+  if(Object.keys(changes).length || (mergingBookmarks&&needsWrite)) backupId=await backup(current,mergingBookmarks?'收藏夹合并前自动备份':'云端覆盖前自动备份');
   if(needsWrite) {const encrypted=await encrypt(merged,pass);await assertUnchanged();await dav.write(encrypted,remote);}
   await assertUnchanged();
   if(Object.keys(changes).length) {
-    const id=await backup(current,'云端覆盖前自动备份');
-    await local.set({journal:{backupId:id,time:Date.now()}});
+    await local.set({journal:{backupId,time:Date.now()}});
     applying=true;
     try {for(const [g,data] of Object.entries(changes)) await apply(g,data);}
     finally {applying=false;}
@@ -66,7 +76,7 @@ async function sync() {
   for(const g of config.groups) {records[g]={...merged.groups[g],hash:await hash(merged.groups[g].data)};initialized[g]=true;}
   await local.set({state:{device,records,initialized}});
   await local.remove('journal');
-  await status(`同步成功 · ${config.groups.map(g=>({bookmarks:'收藏夹',privacy:'隐私偏好',fonts:'字号'})[g]).join('、')}`,true);
+  await status(`同步成功 · ${config.groups.map(g=>({bookmarks:'收藏夹',privacy:'隐私偏好',fonts:'字号'})[g]).join('、')}${mergingBookmarks?'（收藏夹已合并，保留两端内容）':''}`,true);
 }
 async function save(input) {
   const old=(await local.get('config')).config||initial;
@@ -112,6 +122,7 @@ async function dispatch(m) {
     await status(result,true);return result;
   }
   if(m.action==='sync')return sync();
+  if(m.action==='mergeBookmarks')return sync({mergeOnly:true});
   if(m.action==='clearPass') {await session.remove('pass');await local.remove('pass');await pause();return status('本地加密口令已清除，自动同步已暂停。云端文件未更改。');}
   if(m.action==='restore'){await pause();return restore(m.id);}
   if(m.action==='release'){await pause();await releaseSettings();return status('已释放隐私与字号设置控制，自动同步已暂停。');}

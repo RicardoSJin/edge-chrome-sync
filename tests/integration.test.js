@@ -33,8 +33,33 @@ test('End-to-end worker: initial upload/download, edits, key failure, conflict, 
   assert.equal(chrome.storage.local.values.config,undefined);assert.equal(chrome.storage.session.values.pass,undefined);assert.equal(putCount,0);assert.deepEqual(tree,treeBefore);
   localBookmark('initial');await ok('save',{config});await ok('sync');assert.equal((await decrypt(cloud,pass)).groups.bookmarks.data.bar[0].title,'initial');
   assert.equal(chrome.storage.local.values.pass,undefined);assert.equal(chrome.storage.session.values.pass,pass);
-  // A second client: first sync must take older cloud data despite its local edit.
-  chrome.storage.local.values.state={};localBookmark('second-client');await ok('sync');assert.equal(find('1').children[0].title,'initial');assert.equal(chrome.storage.local.values.backups.length,1);
+  const macState=clone(chrome.storage.local.values.state),macTree=clone(tree);
+  // A second client with more/different bookmarks must preserve both copies.
+  chrome.storage.local.values.state={};localBookmark('second-client');await ok('sync');
+  assert.deepEqual(find('1').children.map(n=>n.title),['initial','second-client']);assert.equal(chrome.storage.local.values.backups.length,1);
+  assert.deepEqual(chrome.storage.local.values.backups[0].data.bookmarks.bar.map(n=>n.title),['second-client']);
+  assert.match(chrome.storage.local.values.backups[0].reason,/合并/);
+  assert.deepEqual((await decrypt(cloud,pass)).groups.bookmarks.data.bar.map(n=>n.title),['initial','second-client']);
+  const windowsState=clone(chrome.storage.local.values.state),windowsTree=clone(tree);
+  chrome.storage.local.values.state=macState;tree.splice(0,tree.length,...clone(macTree));await ok('sync');
+  assert.deepEqual(find('1').children.map(n=>n.title),['initial','second-client']);
+  // Normal sync after initialization must propagate deletion, not resurrect it.
+  localBookmark('initial');await ok('sync');chrome.storage.local.values.state=windowsState;tree.splice(0,tree.length,...clone(windowsTree));await ok('sync');
+  assert.deepEqual(find('1').children.map(n=>n.title),['initial']);
+  // Explicit merge also works after initialization, including after restoring a
+  // pre-overwrite backup from an older release. It does not touch settings.
+  const beforeManual=await decrypt(cloud,pass);beforeManual.groups.privacy={time:1,device:'other',data:{'services.searchSuggestEnabled':false}};
+  cloud=await encrypt(beforeManual,pass);etag++;
+  localBookmark('second-client');await ok('mergeBookmarks');
+  const manual=await decrypt(cloud,pass);assert.deepEqual(manual.groups.bookmarks.data.bar.map(n=>n.title),['initial','second-client']);
+  assert.deepEqual(manual.groups.privacy,{time:1,device:'other',data:{'services.searchSuggestEnabled':false}});
+  assert.match(chrome.storage.local.values.status.message,/合并/);
+  const preMergeBackup=chrome.storage.local.values.backups[0].id;
+  await ok('restore',{id:preMergeBackup});assert.deepEqual(find('1').children.map(n=>n.title),['second-client']);
+  await ok('mergeBookmarks');assert.deepEqual(find('1').children.map(n=>n.title),['initial','second-client']);
+  const beforeFailedMerge=clone(cloud);localBookmark('unsynced');conflict=true;
+  assert.equal((await message('mergeBookmarks')).ok,false);assert.deepEqual(cloud,beforeFailedMerge);
+  assert.deepEqual(find('1').children.map(n=>n.title),['unsynced']);assert.equal(chrome.storage.local.values.journal,undefined);conflict=false;
   localBookmark('edited');await ok('sync');assert.equal((await decrypt(cloud,pass)).groups.bookmarks.data.bar[0].title,'edited');
   const oldCloud=clone(cloud);localBookmark('conflicting');conflict=true;const c=await message('sync');assert.equal(c.ok,false);assert.deepEqual(cloud,oldCloud);assert.equal(find('1').children[0].title,'conflicting');conflict=false;
   await ok('save',{config:{...config,pass:'wrong-independent-pass'}});const before=putCount;assert.equal((await message('sync')).ok,false);assert.equal(putCount,before);assert.equal(find('1').children[0].title,'conflicting');

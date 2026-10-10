@@ -29,6 +29,7 @@ $('config').onsubmit=e=>{e.preventDefault();run(async()=>{
   await send('save',{config:c});await refresh(true);
 });};
 $('sync').onclick=()=>run(async()=>{if(dirty)throw Error('配置已修改，请先点击“保存配置”。');notify('正在加密并同步，请稍候…');await send('sync');await refresh();});
+$('mergeBookmarks').onclick=()=>run(async()=>{if(dirty)throw Error('配置已修改，请先点击“保存配置”。');notify('正在合并本地与云端收藏夹，请稍候…');await send('mergeBookmarks');await refresh();});
 $('diagnose').onclick=()=>run(async()=>{
   const c=fields();const url=endpoint(c.url);
   if(!await chrome.permissions.request({origins:[new URL(url).origin+'/*']}))throw Error('[站点权限缺失] 未允许访问 WebDAV，未发送检测请求。');
