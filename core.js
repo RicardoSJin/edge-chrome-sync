@@ -6,7 +6,13 @@ export const FONTS = ['DefaultFontSize','DefaultFixedFontSize','MinimumFontSize'
 export const encode = x => new TextEncoder().encode(x);
 export const b64 = bytes => { let s=''; for (const b of new Uint8Array(bytes)) s+=String.fromCharCode(b); return btoa(s); };
 export const unb64 = s => Uint8Array.from(atob(s), c=>c.charCodeAt(0));
-export async function hash(value) { return b64(await crypto.subtle.digest('SHA-256', encode(JSON.stringify(value)))); }
+// Extension storage may reorder object keys. Array order still represents
+// bookmark order and must remain significant.
+export async function hash(value) {
+  const json=JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)
+    ?Object.fromEntries(Object.keys(item).sort().map(k=>[k,item[k]])):item);
+  return b64(await crypto.subtle.digest('SHA-256', encode(json)));
+}
 async function key(pass, salt) {
   if (typeof pass !== 'string' || pass.length < 12) throw Error('加密口令至少需要 12 个字符。');
   const material=await crypto.subtle.importKey('raw',encode(pass),'PBKDF2',false,['deriveKey']);

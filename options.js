@@ -11,20 +11,21 @@ async function refresh(reset=false){
   $('keyState').textContent=d.hasPass?'加密口令已保存在本机':'加密口令未设置 / 会话已锁定';
   $('pass').placeholder=d.hasPass?'已保存；留空保留现有口令':'至少 12 个字符，两端必须一致';
   if(d.status){notify(d.status.message);$('statusTime').textContent=new Date(d.status.time).toLocaleString();}
-  $('recovery').hidden=!d.journal;if(d.journal)$('recovery').textContent='检测到未完成的覆盖操作，请恢复标记为“中断恢复点”的备份。';
+  $('recovery').hidden=!d.journal;if(d.journal)$('recovery').textContent='检测到未完成的覆盖操作。请恢复“中断恢复点”备份；若要保留当前收藏夹，可点击该备份下的“保留当前收藏夹并解除中断”，校验通过后解除。';
   $('backups').replaceChildren();
   if(!d.backups.length)$('backups').textContent='还没有备份';
   for(const b of d.backups){const item=document.createElement('div');item.className='backup';const text=document.createElement('p');text.textContent=new Date(b.time).toLocaleString()+' · '+b.reason+(d.journal?.backupId===b.id?' · 中断恢复点':'');item.append(text);
     const restore=document.createElement('button');restore.textContent='恢复';restore.onclick=()=>run(async()=>{if(confirm('恢复这份备份将覆盖对应的本地数据，并暂停自动同步。继续？')){await send('restore',{id:b.id});await refresh(true);}});
     const exportButton=document.createElement('button');exportButton.textContent='导出';exportButton.onclick=()=>run(async()=>{const data=await send('exportBackup',{id:b.id});const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='bridge-backup-'+b.time+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});item.append(restore,exportButton);$('backups').append(item);
+    if(d.journal?.backupId===b.id){const keep=document.createElement('button');keep.textContent='保留当前收藏夹并解除中断';keep.onclick=()=>run(async()=>{if(confirm('将检查当前收藏夹是否包含恢复点中的全部内容，保存当前备份并暂停自动同步；检查通过后解除中断记录。不会覆盖收藏夹或写入云端。继续？')){await send('keepCurrentBookmarks',{id:b.id});await refresh(true);}});item.append(keep);}
   }
 }
 async function run(fn){document.querySelectorAll('button').forEach(b=>b.disabled=true);try{await fn();}catch(e){notify(e.message);}finally{document.querySelectorAll('button').forEach(b=>b.disabled=false);}}
 $('config').addEventListener('input',()=>{dirty=true;});
-$('config').onsubmit=e=>{e.preventDefault();run(async()=>{
+$('config').onsubmit=e=>{e.preventDefault();return run(async()=>{
   const c=fields();c.url=endpoint(c.url);
   // Request optional permissions directly from the user's save gesture.
-  const granted=await chrome.permissions.request({origins:[new URL(c.url).origin+'/*'],permissions:c.groups.filter(g=>g!=='bookmarks').map(g=>g==='fonts'?'fontSettings':g)});
+  const granted=await chrome.permissions.request({origins:[new URL(c.url).origin+'/*'],permissions:c.groups.includes('privacy')?['privacy']:[]});
   if(!granted)throw Error('权限未授予，配置尚未保存。');
   await send('save',{config:c});await refresh(true);
 });};

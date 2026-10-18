@@ -32,11 +32,13 @@ async function sync({mergeOnly=false}={}) {
   for(const group of config.groups) {
     current[group]=await capture(group);
     const digest=await hash(current[group]);
-    if(!records[group] || records[group].hash!==digest) {
+    // Compare stored content, not legacy order-sensitive hashes. Upgrading
+    // must not make an unchanged local snapshot appear newer than the cloud.
+    if(!records[group] || await hash(records[group].data)!==digest) {
       const mark=(await local.get('changed_'+group))['changed_'+group];
       const observed=mark>(records[group]?.time||0)?mark:Date.now();
       records[group]={data:current[group],time:Math.max(observed,(records[group]?.time||0)+1),device,hash:digest};
-    }
+    } else records[group]={...records[group],hash:digest};
   }
   // Persist observed edits before networking so a retry cannot refresh their timestamps.
   await local.set({state:{...state,device,records,initialized}});
@@ -61,7 +63,7 @@ async function sync({mergeOnly=false}={}) {
     for(const g of config.groups) if(await hash(await capture(g))!==await hash(current[g]))throw Error('同步期间本地数据发生变化，请重新同步。');
   };
   await assertUnchanged();
-  const needsWrite=JSON.stringify(merged)!==JSON.stringify(cloud);
+  const needsWrite=await hash(merged)!==await hash(cloud);
   let backupId;
   if(Object.keys(changes).length || (mergingBookmarks&&needsWrite)) backupId=await backup(current,mergingBookmarks?'收藏夹合并前自动备份':'云端覆盖前自动备份');
   if(needsWrite) {const encrypted=await encrypt(merged,pass);await assertUnchanged();await dav.write(encrypted,remote);}
@@ -111,6 +113,29 @@ async function restore(id) {
   await status('备份已恢复。自动同步已暂停，请检查后手动同步。',true);
 }
 async function pause() {const {config=initial}=await local.get('config');await local.set({config:{...config,auto:false}});await chrome.alarms.clear('periodic');await chrome.alarms.clear('changed');}
+async function keepCurrentBookmarks(id) {
+  await pendingEvent;
+  const startGeneration=generation;
+  const {backups=[],state={},journal}=await local.get(['backups','state','journal']);
+  if(!journal||journal.backupId!==id)throw Error('中断恢复点已变化，请刷新页面后重试。');
+  const b=backups.find(x=>x.id===id);
+  if(!b||Object.keys(b.data).length!==1||!b.data.bookmarks)throw Error('此恢复点不只包含收藏夹或已丢失，请使用备份恢复。');
+  const current=await capture('bookmarks'),digest=await hash(current);
+  if(await hash(mergeBookmarks(current,b.data.bookmarks))!==digest)throw Error('当前收藏夹缺少恢复点中的内容，未解除中断。请导出当前收藏夹及恢复点备份后处理。');
+  const assertUnchanged=async()=>{
+    if(generation!==startGeneration||await hash(await capture('bookmarks'))!==digest)throw Error('校验期间收藏夹发生变化，未解除中断，请重试。');
+  };
+  await backup({bookmarks:current},'保留当前收藏夹解除中断前自动备份',id);
+  await assertUnchanged();
+  const device=state.device||crypto.randomUUID();
+  const records={...state.records,bookmarks:{data:current,time:Math.max(Date.now(),(state.records?.bookmarks?.time||0)+1),device,hash:digest}};
+  // The next sync must merge again, since an interrupted operation may have
+  // changed either side. Keep other groups' initialization state intact.
+  await local.set({state:{...state,device,records,initialized:{...state.initialized,bookmarks:false}}});
+  await assertUnchanged();
+  await local.remove('journal');
+  await status('已保留当前收藏夹并解除中断。自动同步已暂停；下次同步将先合并两端收藏夹。',true);
+}
 async function dispatch(m) {
   if(m.action==='load') {const d=await local.get(['config','status','backups','journal']);return {...d,config:d.config||initial,hasPass:!!await secret(),backups:(d.backups||[]).map(({id,time,reason})=>({id,time,reason}))};}
   if(m.action==='save')return save(m.config);
@@ -125,6 +150,7 @@ async function dispatch(m) {
   if(m.action==='mergeBookmarks')return sync({mergeOnly:true});
   if(m.action==='clearPass') {await session.remove('pass');await local.remove('pass');await pause();return status('本地加密口令已清除，自动同步已暂停。云端文件未更改。');}
   if(m.action==='restore'){await pause();return restore(m.id);}
+  if(m.action==='keepCurrentBookmarks'){await pause();return keepCurrentBookmarks(m.id);}
   if(m.action==='release'){await pause();await releaseSettings();return status('已释放隐私与字号设置控制，自动同步已暂停。');}
   if(m.action==='exportBackup'){const {backups=[]}=await local.get('backups');return backups.find(x=>x.id===m.id);}
   throw Error('不支持的操作。');
