@@ -10,4 +10,4 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - run: node --test tests/core.test.js tests/integration.test.js tests/browser.test.js
+      - run: node --test tests/*.test.js

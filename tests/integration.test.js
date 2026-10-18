@@ -1,9 +1,11 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {encrypt,decrypt} from '../core.js';
+import {encrypt,decrypt,hash} from '../core.js';
 const clone=x=>structuredClone(x);
 const event=()=>({listeners:[],addListener(fn){this.listeners.push(fn);}});
-function storage(){const values={};return {values,async get(keys){const out={};for(const k of typeof keys==='string'?[keys]:keys)if(k in values)out[k]=clone(values[k]);return out;},async set(v){Object.assign(values,clone(v));},async remove(keys){for(const k of typeof keys==='string'?[keys]:keys)delete values[k];},async setAccessLevel(){}};}
+// Chrome storage can return dictionary keys in a different insertion order.
+const stored=x=>Array.isArray(x)?x.map(stored):x&&typeof x==='object'?Object.fromEntries(Object.keys(x).sort().map(k=>[k,stored(x[k])])):x;
+function storage(){const values={};return {values,async get(keys){const out={};for(const k of typeof keys==='string'?[keys]:keys)if(k in values)out[k]=stored(values[k]);return out;},async set(v){Object.assign(values,stored(v));},async remove(keys){for(const k of typeof keys==='string'?[keys]:keys)delete values[k];},async setAccessLevel(){}};}
 let serial=10,failCreate=false,failRemove=false;
 const tree=[{id:'0',children:[{id:'1',title:'Bookmarks bar',children:[]},{id:'2',title:'Other bookmarks',children:[]}]}];
 function find(id,n=tree[0]) {if(n.id===id)return n;for(const child of n.children||[]){const result=find(id,child);if(result)return result;}}
@@ -11,8 +13,9 @@ const bookmarks={getTree(cb){cb(clone(tree));},create(input,cb){if(failCreate){c
 for(const name of ['onCreated','onRemoved','onChanged','onMoved','onChildrenReordered','onImportEnded'])bookmarks[name]=event();
 let permissionGranted=true;
 globalThis.chrome={runtime:{id:'test-id',getURL:p=>'chrome-extension://test-id/'+p,onMessage:event(),onInstalled:event(),onStartup:event(),openOptionsPage(){}},storage:{local:storage(),session:storage()},bookmarks,permissions:{async contains(){return permissionGranted;}},alarms:{onAlarm:event(),async create(){},async clear(){}},action:{onClicked:event()}};
-let cloud=null,etag=0,conflict=false,putCount=0;
+let cloud=null,etag=0,conflict=false,putCount=0,requestCount=0;
 globalThis.fetch=async(url,o)=>{
+  requestCount++;
   if(o.method==='LOCK')return new Response(null,{status:405});
   if(o.method==='PROPFIND')return new Response('<multistatus/>',{status:207});
   if(o.method==='GET')return cloud?new Response(JSON.stringify(cloud),{headers:{etag:'"'+etag+'"'}}):new Response('',{status:404});
@@ -73,4 +76,74 @@ test('End-to-end worker: initial upload/download, edits, key failure, conflict, 
   await ok('clearPass');assert.equal(chrome.storage.session.values.pass,undefined);assert.equal(chrome.storage.local.values.config.auto,false);assert.match((await message('sync')).error,/加密口令/);
   assert.match(await ok('diagnose',{config}),/HTTP 207/);
   permissionGranted=false;assert.match((await message('sync')).error,/站点权限缺失/);assert.match((await message('diagnose',{config})).error,/站点权限缺失/);permissionGranted=true;
+});
+
+test('Legacy hashes cannot promote unchanged local data over a newer cloud snapshot',async()=>{
+  await ok('save',{config});localBookmark('unchanged');
+  const data={bar:[{title:'unchanged',url:'https://example.com/unchanged'}],other:[],mobile:[]};
+  const legacyHash=Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(data)))).toString('base64');
+  chrome.storage.local.values.state={device:'legacy',initialized:{bookmarks:true},records:{bookmarks:{data,time:1,device:'legacy',hash:legacyHash}}};
+  cloud=await encrypt(doc('newer-cloud'),pass);etag++;
+  const beforePut=putCount;await ok('sync');
+  assert.equal(find('1').children[0].title,'newer-cloud');
+  assert.equal((await decrypt(cloud,pass)).groups.bookmarks.device,'remote');
+  assert.equal(putCount,beforePut);
+});
+
+test('Keep-current recovery preserves additions, pins backups, pauses sync and forces the next merge',async()=>{
+  localBookmark('original');
+  find('1').children.push({id:String(++serial),title:'Folder',children:[{id:String(++serial),title:'Nested',url:'https://example.com/nested'}]});
+  const data={bookmarks:{bar:[{title:'original',url:'https://example.com/original'},{title:'Folder',children:[{title:'Nested',url:'https://example.com/nested'}]}],mobile:[],other:[]}};
+  const recovery={id:'recovery',time:1,reason:'云端覆盖前自动备份',data};
+  chrome.storage.local.values.backups=Array.from({length:4},(_,i)=>({...clone(recovery),id:'later-'+i})).concat([recovery]);
+  chrome.storage.local.values.journal={backupId:recovery.id,time:2};
+  chrome.storage.local.values.config={...config,auto:true};
+  chrome.storage.local.values.state={device:'local',initialized:{bookmarks:true,privacy:true},records:{privacy:{data:{},time:1,device:'local'}}};
+  find('1').children.push({id:String(++serial),title:'addition',url:'https://example.com/addition'});
+  const before=clone(tree),requests=requestCount;
+  await ok('keepCurrentBookmarks',{id:recovery.id});
+  assert.deepEqual(tree,before);assert.equal(requestCount,requests);
+  const {backups,journal,state,config:saved,status}=chrome.storage.local.values;
+  assert.equal(journal,undefined);assert.equal(saved.auto,false);assert.match(status.message,/已保留当前/);
+  assert.equal(backups.length,5);assert.ok(backups.some(b=>b.id===recovery.id));
+  assert.match(backups[0].reason,/解除中断前/);assert.equal(backups[0].data.bookmarks.bar.length,3);
+  assert.equal(state.initialized.bookmarks,false);assert.equal(state.initialized.privacy,true);assert.equal(state.records.privacy.time,1);
+  assert.equal(state.records.bookmarks.hash,await hash(backups[0].data.bookmarks));
+  cloud=await encrypt(doc('remote-only'),pass);etag++;
+  await ok('sync');
+  assert.deepEqual(find('1').children.map(n=>n.title),['remote-only','original','Folder','addition']);
+  assert.equal(chrome.storage.local.values.state.initialized.bookmarks,true);
+});
+
+test('Keep-current recovery rejects missing content, stale or mixed recovery points and backup failures',async()=>{
+  localBookmark('kept');
+  const point={id:'guarded',time:1,reason:'test',data:{bookmarks:{bar:[{title:'missing',url:'https://example.com/missing'}],other:[],mobile:[]}}};
+  chrome.storage.local.values.backups=[clone(point)];chrome.storage.local.values.journal={backupId:point.id};
+  const before=clone(tree),requests=requestCount;
+  assert.match((await message('keepCurrentBookmarks',{id:'wrong'})).error,/恢复点已变化/);
+  assert.match((await message('keepCurrentBookmarks',{id:point.id})).error,/缺少恢复点/);
+  assert.ok(chrome.storage.local.values.journal);
+  chrome.storage.local.values.backups[0].data={bookmarks:{bar:[{title:'kept',url:'https://example.com/kept'}],other:[],mobile:[]},fonts:{DefaultFontSize:16}};
+  assert.match((await message('keepCurrentBookmarks',{id:point.id})).error,/不只包含收藏夹/);
+  delete chrome.storage.local.values.backups[0].data.fonts;
+  // Duplicate links and empty folders count as content, too.
+  chrome.storage.local.values.backups[0].data.bookmarks.bar.push({title:'kept',url:'https://example.com/kept'});
+  assert.match((await message('keepCurrentBookmarks',{id:point.id})).error,/缺少恢复点/);
+  chrome.storage.local.values.backups[0].data.bookmarks.bar.pop();
+  chrome.storage.local.values.backups[0].data.bookmarks.other.push({title:'Empty folder',children:[]});
+  assert.match((await message('keepCurrentBookmarks',{id:point.id})).error,/缺少恢复点/);
+  chrome.storage.local.values.backups[0].data.bookmarks.other=[];
+  const set=chrome.storage.local.set;
+  try {
+    chrome.storage.local.set=async v=>{if(v.backups)throw Error('备份空间不足');return set(v);};
+    assert.match((await message('keepCurrentBookmarks',{id:point.id})).error,/空间不足/);
+    assert.equal(chrome.storage.local.values.journal.backupId,point.id);
+  } finally {chrome.storage.local.set=set;}
+  assert.deepEqual(tree,before);assert.equal(requestCount,requests);
+  // A bookmark edit during backup must leave the recovery marker in place.
+  try {
+    chrome.storage.local.set=async v=>{await set(v);if(v.backups){localBookmark('concurrent-edit');bookmarks.onChanged.listeners.forEach(fn=>fn());}};
+    assert.match((await message('keepCurrentBookmarks',{id:point.id})).error,/发生变化/);
+    assert.equal(chrome.storage.local.values.journal.backupId,point.id);
+  } finally {chrome.storage.local.set=set;}
 });

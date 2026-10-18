@@ -1,9 +1,19 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {encrypt,decrypt,endpoint,validateDoc,winner,mergeBookmarks} from '../core.js';
+import {encrypt,decrypt,endpoint,validateDoc,winner,mergeBookmarks,hash} from '../core.js';
 import {WebDAV} from '../dav.js';
 const pass='独立的长加密口令-test-123';
 const data={version:1,groups:{bookmarks:{time:100,device:'a',data:{bar:[{title:'中文目录',children:[{title:'示例',url:'https://example.org'}]}],other:[],mobile:[]}}}};
+
+test('Snapshot hashes ignore object key order but preserve bookmark order and content',async()=>{
+  const a={bar:[{title:'Folder',children:[{title:'One',url:'https://example.org/1'},{title:'Two',url:'https://example.org/2'}]}],other:[],mobile:[]};
+  const b={mobile:[],other:[],bar:[{children:[{url:'https://example.org/1',title:'One'},{url:'https://example.org/2',title:'Two'}],title:'Folder'}]};
+  assert.equal(await hash(a),await hash(b));
+  const reordered=structuredClone(a);reordered.bar[0].children.reverse();
+  assert.notEqual(await hash(a),await hash(reordered));
+  const edited=structuredClone(a);edited.bar[0].children[0].title='Edited';
+  assert.notEqual(await hash(a),await hash(edited));
+});
 test('Unicode roundtrip, randomized encryption, incorrect key and tamper rejection',async()=>{
   const a=await encrypt(data,pass),b=await encrypt(data,pass);assert.notEqual(a.data,b.data);assert.notEqual(a.salt,b.salt);
   assert.deepEqual(await decrypt(a,pass),data);assert.ok(!JSON.stringify(a).includes('example.org'));
