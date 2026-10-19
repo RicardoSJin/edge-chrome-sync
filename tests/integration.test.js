@@ -11,9 +11,9 @@ const tree=[{id:'0',children:[{id:'1',title:'Bookmarks bar',children:[]},{id:'2'
 function find(id,n=tree[0]){if(n.id===id)return n;for(const c of n.children||[]){const r=find(id,c);if(r)return r;}}
 const bookmarks={getTree(cb){cb(clone(tree));},create(input,cb){if(failCreate){chrome.runtime.lastError={message:'模拟写入失败'};cb();delete chrome.runtime.lastError;return;}const n={...input,id:String(++serial),...(input.url===undefined?{children:[]}:{})};find(input.parentId).children.push(n);cb(clone(n));},removeTree(id,cb){if(failRemove){chrome.runtime.lastError={message:'模拟删除中断'};cb();delete chrome.runtime.lastError;return;}const remove=n=>{if(n.children){n.children=n.children.filter(c=>c.id!==id);n.children.forEach(remove);}};remove(tree[0]);cb();}};
 for(const name of ['onCreated','onRemoved','onChanged','onMoved','onChildrenReordered','onImportEnded'])bookmarks[name]=event();
-const alarms=new Map(),settings={};
+const alarms=new Map(),settings={},levels={},settingWrites=[];
 globalThis.chrome={runtime:{id:'test-id',getURL:p=>'chrome-extension://test-id/'+p,onMessage:event(),onInstalled:event(),onStartup:event(),openOptionsPage(){}},storage:{local:storage(),session:storage()},bookmarks,permissions:{async contains(){return permissionGranted;}},alarms:{onAlarm:event(),async create(name,options){alarms.set(name,options);},async clear(name){alarms.delete(name);}},action:{onClicked:event()},privacy:{network:{},services:{},websites:{}},fontSettings:{}};
-for(const path of PRIVACY){const [a,b]=path.split('.');chrome.privacy[a][b]={get(o,cb){cb({value:settings[path],levelOfControl:'controllable_by_this_extension'});},set(o,cb){settings[path]=o.value;cb();},onChange:event()};}
+for(const path of PRIVACY){const [a,b]=path.split('.');chrome.privacy[a][b]={get(o,cb){cb({value:settings[path],levelOfControl:levels[path]||'controllable_by_this_extension'});},set(o,cb){settingWrites.push(path);settings[path]=o.value;cb();},onChange:event()};}
 for(const f of FONTS){chrome.fontSettings['get'+f]=(o,cb)=>cb({pixelSize:settings[f],levelOfControl:'controllable_by_this_extension'});chrome.fontSettings['set'+f]=(o,cb)=>{settings[f]=o.pixelSize;cb();};chrome.fontSettings['on'+f+'Changed']=event();}
 let cloud=null,etag=0,conflict=false,methods=[],afterGet;
 globalThis.fetch=async(url,o)=>{
@@ -38,7 +38,7 @@ beforeEach(async()=>{
   await new Promise(resolve=>setImmediate(resolve));
   for(const store of Object.values(chrome.storage))for(const k of Object.keys(store.values))delete store.values[k];
   serial=10;failCreate=false;failRemove=false;permissionGranted=true;cloud=null;etag=0;conflict=false;methods=[];afterGet=undefined;alarms.clear();
-  for(const p of PRIVACY)settings[p]=true;for(const f of FONTS)settings[f]=16;
+  for(const p of PRIVACY){settings[p]=true;delete levels[p];}for(const f of FONTS)settings[f]=16;settingWrites.length=0;
   tree[0].children=tree[0].children.filter(n=>['1','2'].includes(n.id));localBookmark('local');await ok('save',{config});
 });
 test('First sync requires an explicit direction; diagnostics and obsolete merge action cannot write',async()=>{
@@ -169,4 +169,18 @@ test('Clearing the key, missing permissions and account changes retain protectio
   await ok('save',{config});permissionGranted=false;
   for(const action of ['upload','download','sync'])assert.match((await message(action)).error,/站点权限缺失/);permissionGranted=true;
   await ok('save',{config:{...config,username:'different',auto:true}});assert.match((await message('sync')).error,/先选择/);assert.equal(alarms.has('periodic'),false);
+});
+
+test('Password-manager-owned matching preferences do not block bookmark downloads or take ownership',async()=>{
+  const locked=['services.autofillAddressEnabled','services.autofillCreditCardEnabled','services.passwordSavingEnabled'];
+  for(const k of locked){settings[k]=false;levels[k]='controlled_by_other_extensions';}
+  const remote=doc('cloud-bookmark');remote.groups.privacy={time:1,device:'remote',data:Object.fromEntries(PRIVACY.map(k=>[k,settings[k]]))};
+  remote.groups.privacy.data['services.searchSuggestEnabled']=false;
+  cloud=await encrypt(remote,pass);etag++;await ok('save',{config:{...config,groups:['bookmarks','privacy']}});
+  const original=clone(cloud);await ok('download');assert.deepEqual(titles(),['cloud-bookmark']);assert.deepEqual(cloud,original);
+  assert.deepEqual(settingWrites,['services.searchSuggestEnabled']);assert.equal(chrome.storage.local.values.journal,undefined);
+  for(const k of locked){assert.equal(settings[k],false);assert.equal(levels[k],'controlled_by_other_extensions');}
+  const next=clone(remote);next.groups.bookmarks.data.bar=[link('must-not-apply')];next.groups.privacy.data[locked[0]]=true;cloud=await encrypt(next,pass);etag++;
+  assert.match((await message('download')).error,/地址自动填充.*当前值与目标不同/);assert.deepEqual(titles(),['cloud-bookmark']);assert.equal(chrome.storage.local.values.journal,undefined);
+  assert.ok(!methods.includes('PUT'));
 });

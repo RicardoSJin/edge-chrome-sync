@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "桥同步 · Edge & Chrome",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "minimum_chrome_version": "120",
   "description": "通过自己的 WebDAV 同步收藏夹、隐私偏好和字号，使用独立口令端到端加密。",
   "permissions": ["storage", "bookmarks", "alarms", "fontSettings"],
