@@ -1,9 +1,11 @@
-import {encrypt,decrypt,endpoint,hash,validateDoc,winner,mergeBookmarks,PRIVACY,FONTS} from './core.js';
+import {encrypt,decrypt,endpoint,hash,validateData,validateDoc,winner,bookmarksContain,PRIVACY,FONTS} from './core.js';
 import {capture,apply,preflight,releaseSettings} from './browser.js';
 import {WebDAV} from './dav.js';
 let busy=false, applying=false, generation=0, pendingEvent=Promise.resolve();
 const local=chrome.storage.local, session=chrome.storage.session;
 const initial={url:'',username:'',password:'',groups:['bookmarks'],interval:15,auto:false,remember:false,consent:false};
+// Setting APIs only overwrite keys present in the source snapshot.
+const appliedData=(group,current,source)=>group==='bookmarks'?{...source,mobile:source.mobile||[]}:{...current,...source};
 async function secret() {const s=await session.get('pass'),l=await local.get('pass');return s.pass||l.pass;}
 async function backup(data,reason,protectedId) {
   const {backups=[]}=await local.get('backups');
@@ -17,20 +19,25 @@ async function requireHost(url) {
   const origin=new URL(endpoint(url)).origin+'/*';
   if(!await chrome.permissions.contains({origins:[origin]}))throw Error('[站点权限缺失] 请点击“检测连接”或重新保存配置，并允许访问 WebDAV 站点。也请检查扩展详情中的站点访问限制。');
 }
-async function sync({mergeOnly=false}={}) {
+const initializedGroups=(config,state)=>config.groups.every(g=>state.initialized?.[g]);
+async function schedule(config,state) {
+  await chrome.alarms.clear('periodic');await chrome.alarms.clear('changed');
+  if(config.auto&&initializedGroups(config,state))await chrome.alarms.create('periodic',{periodInMinutes:config.interval});
+}
+async function sync(direction='auto') {
   await pendingEvent;
-  const {config:savedConfig=initial,state={},journal}=await local.get(['config','state','journal']);
-  if(mergeOnly&&!savedConfig.groups.includes('bookmarks'))throw Error('请先勾选收藏夹并保存配置，再合并。');
-  const config=mergeOnly?{...savedConfig,groups:['bookmarks']}:savedConfig;
+  if(!['auto','upload','download'].includes(direction))throw Error('未知同步方向。');
+  const {config=initial,state={},journal}=await local.get(['config','state','journal']);
   if(journal) throw Error('上次应用数据被中断。请先在备份区恢复，再继续同步。');
-  if(!config.consent) throw Error('请先确认首次同步规则并保存配置。');
+  if(!config.consent) throw Error('请先确认覆盖规则并保存配置。');
+  if(direction==='auto'&&!initializedGroups(config,state))throw Error('请先选择“覆盖（云端）上传”或“（从云端）覆盖本机”完成首次同步，再使用双向同步。');
   await requireHost(config.url);
   const pass=await secret();if(!pass)throw Error('请填写独立加密口令并保存后同步。');
   const startGeneration=generation;
   const device=state.device||crypto.randomUUID();
   const current={}, records={...state.records}, initialized={...state.initialized};
   for(const group of config.groups) {
-    current[group]=await capture(group);
+    current[group]=validateData(group,await capture(group));
     const digest=await hash(current[group]);
     // Compare stored content, not legacy order-sensitive hashes. Upgrading
     // must not make an unchanged local snapshot appear newer than the cloud.
@@ -44,46 +51,54 @@ async function sync({mergeOnly=false}={}) {
   await local.set({state:{...state,device,records,initialized}});
   const dav=new WebDAV(config),remote=await dav.read();
   const cloud=remote.doc?validateDoc(await decrypt(remote.doc,pass)):{version:1,groups:{}};
-  const merged={version:1,groups:{...cloud.groups}},changes={};
-  let mergingBookmarks=mergeOnly;
-  for(const group of config.groups) {
-    let win=winner(records[group],cloud.groups[group],!initialized[group]);
-    if(group==='bookmarks'&&cloud.groups.bookmarks&&(mergeOnly||!initialized.bookmarks)) {
-      mergingBookmarks=true;
-      const data=mergeBookmarks(cloud.groups.bookmarks.data,current.bookmarks);
-      win=await hash(data)===await hash(cloud.groups.bookmarks.data)?cloud.groups.bookmarks:
-        {data,time:Math.max(Date.now(),cloud.groups.bookmarks.time+1,records.bookmarks.time+1),device};
-    }
-    merged.groups[group]={data:win.data,time:win.time,device:win.device};
-    if(await hash(win.data)!==await hash(current[group])) changes[group]=win.data;
+  if(direction==='download') {
+    const missing=config.groups.filter(g=>!cloud.groups[g]);
+    if(missing.length)throw Error('云端缺少所选类别：'+missing.map(g=>({bookmarks:'收藏夹',privacy:'隐私偏好',fonts:'字号'})[g]).join('、')+'。请先在来源设备上传；本机未被覆盖。');
   }
+  const nextDoc={version:1,groups:{...cloud.groups}},nextLocal={},changes={};
+  for(const group of config.groups) {
+    const win=direction==='upload'
+      ?{data:current[group],time:Math.max(Date.now(),(cloud.groups[group]?.time||0)+1,records[group].time+1),device}
+      :direction==='download'?cloud.groups[group]:winner(records[group],cloud.groups[group],false);
+    nextDoc.groups[group]={data:win.data,time:win.time,device:win.device};
+    nextLocal[group]=appliedData(group,current[group],win.data);
+    if(await hash(nextLocal[group])!==await hash(current[group])) changes[group]=group==='bookmarks'?nextLocal[group]:win.data;
+  }
+  validateDoc(nextDoc);
   for(const [g,data] of Object.entries(changes)) await preflight(g,data);
   const assertUnchanged=async()=>{
     if(generation!==startGeneration)throw Error('同步期间本地数据发生变化，已停止应用。请重新同步。');
     for(const g of config.groups) if(await hash(await capture(g))!==await hash(current[g]))throw Error('同步期间本地数据发生变化，请重新同步。');
   };
   await assertUnchanged();
-  const needsWrite=await hash(merged)!==await hash(cloud);
+  // A download never writes back to the server, even for first use or missing data.
+  const needsWrite=direction!=='download'&&await hash(nextDoc)!==await hash(cloud);
   let backupId;
-  if(Object.keys(changes).length || (mergingBookmarks&&needsWrite)) backupId=await backup(current,mergingBookmarks?'收藏夹合并前自动备份':'云端覆盖前自动备份');
-  if(needsWrite) {const encrypted=await encrypt(merged,pass);await assertUnchanged();await dav.write(encrypted,remote);}
+  if(Object.keys(changes).length) backupId=await backup(current,'覆盖本机前自动备份');
+  if(direction==='upload'&&needsWrite) {
+    const oldCloud=Object.fromEntries(config.groups.filter(g=>cloud.groups[g]).map(g=>[g,cloud.groups[g].data]));
+    if(Object.keys(oldCloud).length)await backup(oldCloud,'覆盖云端前的云端快照');
+  }
+  if(needsWrite) {const encrypted=await encrypt(nextDoc,pass);await assertUnchanged();await dav.write(encrypted,remote);}
   await assertUnchanged();
   if(Object.keys(changes).length) {
     await local.set({journal:{backupId,time:Date.now()}});
     applying=true;
     try {for(const [g,data] of Object.entries(changes)) await apply(g,data);}
     finally {applying=false;}
-    for(const g of Object.keys(changes)) if(await hash(await capture(g))!==await hash(changes[g]))throw Error('应用结果与云端不一致，请从备份恢复。');
+    for(const g of Object.keys(changes)) if(await hash(await capture(g))!==await hash(nextLocal[g]))throw Error('应用结果与云端不一致，请从备份恢复。');
   }
-  for(const g of config.groups) {records[g]={...merged.groups[g],hash:await hash(merged.groups[g].data)};initialized[g]=true;}
-  await local.set({state:{device,records,initialized}});
+  for(const g of config.groups) {records[g]={...nextDoc.groups[g],data:nextLocal[g],hash:await hash(nextLocal[g])};initialized[g]=true;}
+  const nextState={device,records,initialized};
+  await local.set({state:nextState});
   await local.remove('journal');
-  await status(`同步成功 · ${config.groups.map(g=>({bookmarks:'收藏夹',privacy:'隐私偏好',fonts:'字号'})[g]).join('、')}${mergingBookmarks?'（收藏夹已合并，保留两端内容）':''}`,true);
+  await schedule(config,nextState);
+  await status(`${({auto:'双向同步成功',upload:'上传成功：已用本机覆盖云端',download:'下载成功：已用云端覆盖本机'})[direction]} · ${config.groups.map(g=>({bookmarks:'收藏夹',privacy:'隐私偏好',fonts:'字号'})[g]).join('、')}`,true);
 }
 async function save(input) {
   const old=(await local.get('config')).config||initial;
   const config={url:endpoint(input.url),username:String(input.username||''),password:String(input.password||''),groups:['bookmarks','privacy','fonts'].filter(g=>input.groups?.includes(g)),interval:Number(input.interval),auto:!!input.auto,remember:!!input.remember,consent:!!input.consent};
-  if(!config.groups.length||![5,15,30,60].includes(config.interval)||!config.consent)throw Error('请选择同步项目、有效间隔，并确认首次同步规则。');
+  if(!config.groups.length||![5,15,30,60].includes(config.interval)||!config.consent)throw Error('请选择同步项目、有效间隔，并确认覆盖规则。');
   if(config.username.includes(':'))throw Error('WebDAV 账户名不能包含冒号。');
   for(const g of config.groups.filter(g=>g!=='bookmarks'))if(!await chrome.permissions.contains({permissions:[g==='fonts'?'fontSettings':g]}))throw Error('未授予所选设置的权限。');
   await requireHost(config.url);
@@ -95,9 +110,8 @@ async function save(input) {
   await session.set({pass});
   if(config.remember)await local.set({pass});else await local.remove('pass');
   await local.set({config,state});
-  await chrome.alarms.clear('periodic');
-  if(config.auto)await chrome.alarms.create('periodic',{periodInMinutes:config.interval});
-  await status('配置已保存。');
+  await schedule(config,state);
+  await status(initializedGroups(config,state)?'配置已保存。':'配置已保存。请先选择上传或下载方向完成首次同步，再使用自动双向同步。');
 }
 async function restore(id) {
   const {backups=[],state={}}=await local.get(['backups','state']);const b=backups.find(x=>x.id===id);if(!b)throw Error('备份不存在。');
@@ -106,11 +120,11 @@ async function restore(id) {
   await backup(before,'手动恢复前自动备份',id);
   await local.set({journal:{backupId:id,time:Date.now()}});
   applying=true;try {for(const [g,data] of Object.entries(b.data))await apply(g,data);}finally{applying=false;}
-  for(const [g,data] of Object.entries(b.data))if(await hash(await capture(g))!==await hash(data))throw Error('恢复未完成，请检查收藏夹和浏览器设置。');
+  for(const [g,data] of Object.entries(b.data))if(await hash(await capture(g))!==await hash(appliedData(g,before[g],data)))throw Error('恢复未完成，请检查收藏夹和浏览器设置。');
   const records={...state.records},initialized={...state.initialized};
-  for(const [g,data] of Object.entries(b.data)){records[g]={data,time:Math.max(Date.now(),(records[g]?.time||0)+1),device:state.device||crypto.randomUUID(),hash:await hash(data)};initialized[g]=true;}
+  for(const [g,data] of Object.entries(b.data)){const applied=appliedData(g,before[g],data);records[g]={data:applied,time:Math.max(Date.now(),(records[g]?.time||0)+1),device:state.device||crypto.randomUUID(),hash:await hash(applied)};initialized[g]=false;}
   await local.set({state:{...state,records,initialized}});await local.remove('journal');
-  await status('备份已恢复。自动同步已暂停，请检查后手动同步。',true);
+  await status('备份已恢复。自动同步已暂停，请先选择上传或下载方向，再恢复双向同步。',true);
 }
 async function pause() {const {config=initial}=await local.get('config');await local.set({config:{...config,auto:false}});await chrome.alarms.clear('periodic');await chrome.alarms.clear('changed');}
 async function keepCurrentBookmarks(id) {
@@ -121,7 +135,7 @@ async function keepCurrentBookmarks(id) {
   const b=backups.find(x=>x.id===id);
   if(!b||Object.keys(b.data).length!==1||!b.data.bookmarks)throw Error('此恢复点不只包含收藏夹或已丢失，请使用备份恢复。');
   const current=await capture('bookmarks'),digest=await hash(current);
-  if(await hash(mergeBookmarks(current,b.data.bookmarks))!==digest)throw Error('当前收藏夹缺少恢复点中的内容，未解除中断。请导出当前收藏夹及恢复点备份后处理。');
+  if(!bookmarksContain(current,b.data.bookmarks))throw Error('当前收藏夹缺少恢复点中的内容，未解除中断。请导出当前收藏夹及恢复点备份后处理。');
   const assertUnchanged=async()=>{
     if(generation!==startGeneration||await hash(await capture('bookmarks'))!==digest)throw Error('校验期间收藏夹发生变化，未解除中断，请重试。');
   };
@@ -129,12 +143,11 @@ async function keepCurrentBookmarks(id) {
   await assertUnchanged();
   const device=state.device||crypto.randomUUID();
   const records={...state.records,bookmarks:{data:current,time:Math.max(Date.now(),(state.records?.bookmarks?.time||0)+1),device,hash:digest}};
-  // The next sync must merge again, since an interrupted operation may have
-  // changed either side. Keep other groups' initialization state intact.
+  // Recovery must never choose an overwrite direction on the user's behalf.
   await local.set({state:{...state,device,records,initialized:{...state.initialized,bookmarks:false}}});
   await assertUnchanged();
   await local.remove('journal');
-  await status('已保留当前收藏夹并解除中断。自动同步已暂停；下次同步将先合并两端收藏夹。',true);
+  await status('已保留当前收藏夹并解除中断。自动同步已暂停；请先选择上传或下载方向，再恢复双向同步。',true);
 }
 async function dispatch(m) {
   if(m.action==='load') {const d=await local.get(['config','status','backups','journal']);return {...d,config:d.config||initial,hasPass:!!await secret(),backups:(d.backups||[]).map(({id,time,reason})=>({id,time,reason}))};}
@@ -147,7 +160,8 @@ async function dispatch(m) {
     await status(result,true);return result;
   }
   if(m.action==='sync')return sync();
-  if(m.action==='mergeBookmarks')return sync({mergeOnly:true});
+  if(m.action==='upload')return sync('upload');
+  if(m.action==='download')return sync('download');
   if(m.action==='clearPass') {await session.remove('pass');await local.remove('pass');await pause();return status('本地加密口令已清除，自动同步已暂停。云端文件未更改。');}
   if(m.action==='restore'){await pause();return restore(m.id);}
   if(m.action==='keepCurrentBookmarks'){await pause();return keepCurrentBookmarks(m.id);}
@@ -161,10 +175,10 @@ chrome.runtime.onMessage.addListener((m,sender,respond)=>{
   (m.action==='load'?dispatch(m):locked(()=>dispatch(m))).then(data=>respond({ok:true,data})).catch(async e=>{await status(e.message);respond({ok:false,error:e.message});});return true;
 });
 chrome.action.onClicked.addListener(()=>chrome.runtime.openOptionsPage());
-chrome.alarms.onAlarm.addListener(async a=>{if(!['periodic','changed'].includes(a.name)||busy)return;const {config}=await local.get('config');if(config?.auto)await locked(sync).catch(e=>status(e.message));});
+chrome.alarms.onAlarm.addListener(async a=>{if(!['periodic','changed'].includes(a.name)||busy)return;const {config,state={}}=await local.get(['config','state']);if(config?.auto&&initializedGroups(config,state))await locked(()=>sync()).catch(e=>status(e.message));});
 function changed(group){if(applying)return;generation++;const time=Date.now();pendingEvent=pendingEvent.then(()=>local.set({['changed_'+group]:time})).catch(()=>{});chrome.alarms.create('changed',{delayInMinutes:0.5});}
 for(const event of ['onCreated','onRemoved','onChanged','onMoved','onChildrenReordered','onImportEnded'])chrome.bookmarks[event]?.addListener(()=>changed('bookmarks'));
 for(const p of PRIVACY)p.split('.').reduce((o,k)=>o?.[k],chrome.privacy)?.onChange?.addListener(()=>changed('privacy'));
 for(const f of FONTS)chrome.fontSettings?.['on'+f+'Changed']?.addListener(()=>changed('fonts'));
-async function boot(){await local.setAccessLevel({accessLevel:'TRUSTED_CONTEXTS'});const {config}=await local.get('config');if(config?.auto)await chrome.alarms.create('periodic',{periodInMinutes:config.interval});}
+async function boot(){await local.setAccessLevel({accessLevel:'TRUSTED_CONTEXTS'});const {config,state={}}=await local.get(['config','state']);if(config)await schedule(config,state);}
 chrome.runtime.onInstalled.addListener(boot);chrome.runtime.onStartup.addListener(boot);

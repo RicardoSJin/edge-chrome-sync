@@ -35,6 +35,7 @@ export async function preflight(group,data) {
   }
 }
 export async function apply(group,data) {
+  if(group==='bookmarks')data={...data,mobile:data.mobile||[]};
   await preflight(group,data);
   if(group==='bookmarks') {
     const r=roots(await api(chrome.bookmarks,'getTree'));

@@ -20,7 +20,7 @@ async function refresh(reset=false){
     if(d.journal?.backupId===b.id){const keep=document.createElement('button');keep.textContent='保留当前收藏夹并解除中断';keep.onclick=()=>run(async()=>{if(confirm('将检查当前收藏夹是否包含恢复点中的全部内容，保存当前备份并暂停自动同步；检查通过后解除中断记录。不会覆盖收藏夹或写入云端。继续？')){await send('keepCurrentBookmarks',{id:b.id});await refresh(true);}});item.append(keep);}
   }
 }
-async function run(fn){document.querySelectorAll('button').forEach(b=>b.disabled=true);try{await fn();}catch(e){notify(e.message);}finally{document.querySelectorAll('button').forEach(b=>b.disabled=false);}}
+async function run(fn){document.querySelectorAll('button').forEach(b=>b.disabled=true);try{await fn();}catch(e){try{await refresh();}catch{}notify(e.message);}finally{document.querySelectorAll('button').forEach(b=>b.disabled=false);}}
 $('config').addEventListener('input',()=>{dirty=true;});
 $('config').onsubmit=e=>{e.preventDefault();return run(async()=>{
   const c=fields();c.url=endpoint(c.url);
@@ -30,12 +30,18 @@ $('config').onsubmit=e=>{e.preventDefault();return run(async()=>{
   await send('save',{config:c});await refresh(true);
 });};
 $('sync').onclick=()=>run(async()=>{if(dirty)throw Error('配置已修改，请先点击“保存配置”。');notify('正在加密并同步，请稍候…');await send('sync');await refresh();});
-$('mergeBookmarks').onclick=()=>run(async()=>{if(dirty)throw Error('配置已修改，请先点击“保存配置”。');notify('正在合并本地与云端收藏夹，请稍候…');await send('mergeBookmarks');await refresh();});
+for(const action of ['upload','download'])$(action).onclick=()=>run(async()=>{
+  if(dirty)throw Error('配置已修改，请先点击“保存配置”。');
+  const prompt=action==='upload'?'将用本机已保存配置中勾选的数据覆盖云端对应类别。云端旧快照将先保存为本地备份。继续？':'将用云端快照覆盖本机已保存配置中勾选的数据。本机当前数据将先备份。继续？';
+  if(!confirm(prompt))return;
+  notify(action==='upload'?'正在加密并上传本机快照…':'正在下载云端快照并覆盖本机…');
+  await send(action);await refresh();
+});
 $('diagnose').onclick=()=>run(async()=>{
   const c=fields();const url=endpoint(c.url);
   if(!await chrome.permissions.request({origins:[new URL(url).origin+'/*']}))throw Error('[站点权限缺失] 未允许访问 WebDAV，未发送检测请求。');
   notify('正在检测 WebDAV 目录，不会写入数据…');
-  const result=await send('diagnose',{config:{url,username:c.username,password:c.password}});notify(result);
+  const result=await send('diagnose',{config:{url,username:c.username,password:c.password}});await refresh();notify(result);
 });
 $('clearPass').onclick=()=>run(async()=>{await send('clearPass');$('pass').value='';await refresh(true);});
 $('release').onclick=()=>run(async()=>{await send('release');await refresh(true);});
