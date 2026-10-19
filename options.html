@@ -15,23 +15,26 @@
 <label class="check"><input type="checkbox" id="remember"><span>在此设备记住加密口令<small>默认仅保留到浏览器会话结束。勾选后以明文存入扩展本地存储，适合可信设备。</small></span></label>
 <button id="clearPass" type="button" class="text-button">清除本地口令</button>
 <div class="divider"></div>
-<div class="section-title"><span class="step">03</span><div><h2>选择同步内容</h2><p>首次收藏夹同步合并两端内容；后续按类别比较修改时间，较新的整类快照覆盖较旧的。</p></div></div>
+<div class="section-title"><span class="step">03</span><div><h2>选择同步内容</h2><p>手动选择本机上传或云端下载。双向同步按类别比较修改时间，较新的整类快照覆盖较旧的。</p></div></div>
 <div class="choices">
 <label class="check choice"><input type="checkbox" id="bookmarks" checked><span>收藏夹<small>收藏夹栏、其他收藏夹、移动收藏夹；保留层级与顺序。</small></span></label>
 <label class="check choice"><input type="checkbox" id="privacy"><span>隐私与服务偏好<small>网络预测、错误页面建议、地址与信用卡自动填充开关、密码保存开关、搜索建议、Do Not Track。</small></span></label>
 <label class="check choice"><input type="checkbox" id="fonts"><span>网页字号<small>默认字号、等宽字号、最小字号。</small></span></label>
 </div>
-<div class="schedule"><label class="check"><input id="auto" type="checkbox"><span>自动同步</span></label><label>检查间隔<select id="interval"><option value="5">5 分钟</option><option value="15" selected>15 分钟</option><option value="30">30 分钟</option><option value="60">60 分钟</option></select></label></div>
-<label class="check consent"><input type="checkbox" id="consent" required><span>我了解：首次收藏夹同步保留并合并两端内容，隐私偏好和字号首次以云端为准。<small>后续同步按较新的整类快照覆盖较旧的。合并或覆盖前保存本地备份，最近 5 份可恢复。</small></span></label>
-<div class="actions"><button type="submit" class="primary">保存配置</button><button type="button" id="sync" class="secondary">立即同步</button><button type="button" id="diagnose">检测连接</button></div>
+<div class="schedule"><label class="check"><input id="auto" type="checkbox"><span>自动双向同步</span></label><label>检查间隔<select id="interval"><option value="5">5 分钟</option><option value="15" selected>15 分钟</option><option value="30">30 分钟</option><option value="60">60 分钟</option></select></label></div>
+<label class="check consent"><input type="checkbox" id="consent" required><span>我了解：上传以本机为准，下载以云端为准，覆盖所选类别的全部内容。<small>双向同步采用较新的整类快照，不保留被覆盖端的独有条目。覆盖前保存备份，最近 5 份可恢复。</small></span></label>
+<div class="actions"><button type="submit" class="primary">保存配置</button><button type="button" id="diagnose">检测连接</button></div>
 <p class="footnote">检测连接使用当前填写的接口、账户和同步密钥，只检查目录，不保存配置、不上传文件、不修改收藏夹，也不需要加密口令。</p>
-<p class="footnote">修改配置后请先保存。立即同步使用已保存的配置。</p>
-<button type="button" id="mergeBookmarks">合并收藏夹（保留两端）</button>
-<p class="footnote">已同步过的设备也可以手动合并，仅处理收藏夹。同一路径下同名文件夹合并，标题与网址均相同的收藏夹不重复添加。已被旧版覆盖时，请先从本地备份恢复原收藏夹，再合并；合并无法找回本地和云端都已丢失的条目。</p>
+<div class="divider"></div>
+<div class="section-title"><span class="step">04</span><div><h2>选择覆盖方向</h2><p>首次连接、变更账户或新增同步类别后，先选择一次方向，再使用自动双向同步。</p></div></div>
+<div class="overwrite-actions"><div class="choice"><button type="button" id="upload" class="secondary">覆盖（云端）上传</button><small>本机 → 云端。以本机为准；云端旧快照先备份到本机。</small></div><div class="choice"><button type="button" id="download" class="secondary">（从云端）覆盖本机</button><small>云端 → 本机。以云端为准；本机当前数据先备份。</small></div></div>
+<div class="actions"><button type="button" id="sync">立即双向同步</button></div>
+<p class="footnote">双向同步按收藏夹、隐私、字号分别采用较新的整类快照。手动覆盖始终按按钮方向执行，不比较两端新旧。只处理已勾选并保存的类别。</p>
+<p class="footnote">修改配置后请先保存；操作期间请勿编辑收藏夹。自动同步默认关闭。</p>
 </form></section>
 <aside><section class="card status-card"><span class="eyebrow">同步状态</span><div id="status" role="status" aria-live="polite">尚未同步</div><p id="statusTime"></p><span id="keyState" class="badge">口令未设置</span><p id="recovery" class="warning" hidden></p></section>
 <section class="card"><h2>配置迁移</h2><p>复制连接地址、账户和同步偏好到另一个浏览器。服务器密码和加密口令需要单独填写。</p><div class="inline-actions"><button id="copy" type="button">复制配置</button><button id="import" type="button">导入配置</button></div><textarea id="transfer" rows="4" aria-label="待导入的配置" placeholder="在这里粘贴配置，再点击导入" spellcheck="false"></textarea></section>
-<section class="card"><h2>本地备份</h2><p>恢复后暂停自动同步。导出的备份为明文，请妥善保管。</p><div id="backups">还没有备份</div></section>
+<section class="card"><h2>本地备份</h2><p>包含本机覆盖前备份及手动上传前的云端快照。恢复会覆盖本机对应类别，并暂停自动同步。导出文件为明文，请妥善保管。</p><div id="backups">还没有备份</div></section>
 <section class="card scope"><h2>同步范围说明</h2><p>浏览器不开放所有设置。此插件不支持默认搜索引擎、启动页、主题、登录密码、Cookie、浏览历史、已安装扩展及其他扩展的内部配置。</p><p>首次连接前建议关闭浏览器自带的收藏夹同步，避免两套同步同时改动数据。</p><button id="release" type="button" class="text-button">释放隐私与字号设置控制</button></section></aside></div>
 <footer>数据只发送到你指定的 WebDAV · 无账号注册 · 无统计追踪</footer>
 </main><script src="options.js" type="module"></script></body></html>

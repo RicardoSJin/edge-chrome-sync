@@ -19,3 +19,17 @@ test('Settings capture, application, policy rejection and release',async()=>{
   values.DefaultFontSize.levelOfControl='controlled_by_other_extensions';await assert.rejects(preflight('fonts',{DefaultFontSize:18}),/控制/);
   await releaseSettings();assert.equal(cleared.length,10);
 });
+test('Read-only settings already at the target value are captured without taking ownership; conflicting values fail atomically',async()=>{
+  const sets=[];
+  const address={value:false,levelOfControl:'controlled_by_other_extensions'},search={value:true,levelOfControl:'controllable_by_this_extension'},font={pixelSize:16,levelOfControl:'not_controllable'};
+  globalThis.chrome={runtime:{},privacy:{services:{autofillAddressEnabled:{get(o,cb){cb(address);},set(){throw Error('Cannot take over address setting');}},searchSuggestEnabled:{get(o,cb){cb(search);},set(o,cb){sets.push('search');search.value=o.value;cb();}}}},fontSettings:{}};
+  for(const name of FONTS){chrome.fontSettings['get'+name]=(o,cb)=>cb(font);chrome.fontSettings['set'+name]=()=>{throw Error('Cannot take over font setting');};}
+  assert.equal((await capture('privacy'))['services.autofillAddressEnabled'],false);
+  assert.equal((await capture('fonts')).DefaultFontSize,16);
+  await apply('privacy',{'services.autofillAddressEnabled':false,'services.searchSuggestEnabled':false});assert.deepEqual(sets,['search']);
+  await apply('fonts',{DefaultFontSize:16});
+  assert.equal(address.levelOfControl,'controlled_by_other_extensions');
+  await assert.rejects(apply('privacy',{'services.searchSuggestEnabled':true,'services.autofillAddressEnabled':true}),/地址自动填充.*当前值与目标不同/);
+  assert.equal(search.value,false);assert.deepEqual(sets,['search']);
+  await assert.rejects(preflight('fonts',{DefaultFontSize:18}),/默认字号.*浏览器策略或系统限制/);
+});

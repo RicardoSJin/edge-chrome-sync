@@ -15,11 +15,18 @@ export function roots(tree) {
 function clean(n) {if(n.unmodifiable) throw Error('收藏夹含受管理条目，无法安全替换。');return n.url!==undefined?{title:n.title,url:n.url}:{title:n.title,children:(n.children||[]).map(clean)};}
 const setting = path=>path.split('.').reduce((o,k)=>o?.[k],chrome.privacy);
 const controllable=d=>['controllable_by_this_extension','controlled_by_this_extension'].includes(d.levelOfControl);
+const value=(group,d)=>group==='privacy'?d.value:d.pixelSize;
+const settingName=k=>({'services.autofillAddressEnabled':'地址自动填充','services.autofillCreditCardEnabled':'信用卡自动填充','services.passwordSavingEnabled':'密码保存',DefaultFontSize:'默认字号',DefaultFixedFontSize:'等宽字号',MinimumFontSize:'最小字号'}[k]||k);
+function requireChange(group,k,d,desired) {
+  if(value(group,d)!==desired&&!controllable(d))throw Error(`设置“${settingName(k)}”（${k}）由${d.levelOfControl==='controlled_by_other_extensions'?'其他扩展':'浏览器策略或系统限制'}控制，且当前值与目标不同，已停止覆盖。请在控制方调整，或取消勾选对应同步类别。`);
+}
 export async function capture(group) {
   if(group==='bookmarks') {const r=roots(await api(chrome.bookmarks,'getTree'));return Object.fromEntries(['bar','other','mobile'].map(k=>[k,(r[k]?.children||[]).map(clean)]));}
   const out={};
-  if(group==='privacy') for(const path of PRIVACY) {const s=setting(path);if(s){const d=await api(s,'get',{});if(controllable(d))out[path]=d.value;}}
-  if(group==='fonts') for(const name of FONTS) {const d=await api(chrome.fontSettings,'get'+name,{});if(controllable(d))out[name]=d.pixelSize;}
+  // Reading does not take ownership. Keep readable values so an already-equal
+  // setting owned by a password manager or policy is not mistaken for missing.
+  if(group==='privacy') for(const path of PRIVACY) {const s=setting(path);if(s){const d=await api(s,'get',{});out[path]=d.value;}}
+  if(group==='fonts') for(const name of FONTS) {const d=await api(chrome.fontSettings,'get'+name,{});out[name]=d.pixelSize;}
   return out;
 }
 export async function preflight(group,data) {
@@ -31,10 +38,11 @@ export async function preflight(group,data) {
   } else for(const k of Object.keys(data)) {
     if(group==='privacy'&&!setting(k)) throw Error('目标浏览器不支持一项隐私设置。');
     const d=group==='privacy'?await api(setting(k),'get',{}):await api(chrome.fontSettings,'get'+k,{});
-    if(!controllable(d)) throw Error('设置被浏览器策略或其他扩展控制，已停止覆盖。');
+    requireChange(group,k,d,data[k]);
   }
 }
 export async function apply(group,data) {
+  if(group==='bookmarks')data={...data,mobile:data.mobile||[]};
   await preflight(group,data);
   if(group==='bookmarks') {
     const r=roots(await api(chrome.bookmarks,'getTree'));
@@ -49,6 +57,10 @@ export async function apply(group,data) {
     catch(e) {for(const id of created) await api(chrome.bookmarks,'removeTree',id).catch(()=>{});throw e;}
     for(const k of Object.keys(data)) for(const n of r[k]?.children||[]) await api(chrome.bookmarks,'removeTree',n.id);
   } else for(const [k,v] of Object.entries(data)) {
+    const d=group==='privacy'?await api(setting(k),'get',{}):await api(chrome.fontSettings,'get'+k,{});
+    requireChange(group,k,d,v);
+    // Never call set() for equal values, particularly when another owner exists.
+    if(value(group,d)===v)continue;
     if(group==='privacy') await api(setting(k),'set',{value:v,scope:'regular'});
     else await api(chrome.fontSettings,'set'+k,{pixelSize:v});
   }

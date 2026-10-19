@@ -71,20 +71,19 @@ export function validateDoc(doc) {
 }
 // Categories are independent snapshots. A tie goes to the remote snapshot.
 export function winner(local,remote,first) { return remote && (first || !local || remote.time>=local.time) ? remote : local; }
-// Merge imports within each folder. Match duplicate folders by occurrence, and
-// only deduplicate identical title/URL pairs at the same folder path.
-export function mergeBookmarks(remote,local) {
-  validateData('bookmarks',remote);validateData('bookmarks',local);
-  const merge=(a,b)=>{
-    const out=structuredClone(a),slots=new Map();
+// Recovery-only containment check. Duplicate folders are paired by occurrence;
+// no snapshot is combined or written by this function.
+export function bookmarksContain(current,required) {
+  validateData('bookmarks',current);validateData('bookmarks',required);
+  const contains=(a,b)=>{
+    const slots=new Map();
     const key=n=>JSON.stringify(n.url!==undefined?['url',n.title,n.url]:['folder',n.title]);
     a.forEach((n,i)=>{const k=key(n);if(!slots.has(k))slots.set(k,{indices:[],next:0});slots.get(k).indices.push(i);});
     for(const n of b) {
       const slot=slots.get(key(n)),i=slot?.indices[slot.next++];
-      if(i===undefined)out.push(structuredClone(n));
-      else if(n.url===undefined)out[i].children=merge(out[i].children,n.children);
+      if(i===undefined||n.url===undefined&&!contains(a[i].children,n.children))return false;
     }
-    return out;
+    return true;
   };
-  return validateData('bookmarks',Object.fromEntries(['bar','other','mobile'].map(k=>[k,merge(remote[k]||[],local[k]||[])])));
+  return ['bar','other','mobile'].every(k=>contains(current[k]||[],required[k]||[]));
 }
